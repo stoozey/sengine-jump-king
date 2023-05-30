@@ -27,9 +27,13 @@ private:
     std::string textureName;
     double stateTime;
 
-    int walkDirLast = 1;
-    int walkTextureIndex = 0;
+    int currentDir;
+    int walkTextureIndex;
     double walkTextureTimer;
+
+    float jumpTime;
+    float jumpForce;
+    float jumpVelocity;
 
     int GetInputXAxis();
 

@@ -22,7 +22,13 @@ const std::string PLAYER_TEXTURE_WALK_1 = "player/walk_1";
 const std::string PLAYER_TEXTURE_WALK_2 = "player/walk_2";
 const std::string PLAYER_TEXTURE_WALK_3 = "player/walk_3";
 
-Player::Player() : state(PlayerState::Idle), mesh(classes::Primitive::GetMesh(structs::PrimitiveType::Plane)) {
+const float PLAYER_JUMP_VELOCITY_MAX = 1.5f;
+const float PLAYER_JUMP_VELOCITY_MIN = -PLAYER_JUMP_VELOCITY_MAX;
+
+const float PLAYER_JUMP_HEIGHT = 1.0f;
+const float PLAYER_JUMP_TIME_MAX = 3.0f;
+
+Player::Player() : state(PlayerState::Idle), mesh(classes::Primitive::GetMesh(structs::PrimitiveType::Plane)), currentDir(1) {
     SetState(state);
 
     position.z = -3.0f;
@@ -40,21 +46,37 @@ Player::Player() : state(PlayerState::Idle), mesh(classes::Primitive::GetMesh(st
 }
 
 void Player::SetState(PlayerState newState) {
-    state = newState;
-    stateTime = 0;
-
     switch (state) {
         case PlayerState::Walking: {
             walkTextureIndex = 0;
             walkTextureTimer = 0;
             break;
         }
+
+        case PlayerState::Jump: {
+            core::Log::Info(std::to_string(stateTime));
+            jumpTime = std::clamp(static_cast<float>(stateTime), 0.1f, PLAYER_JUMP_TIME_MAX);
+
+            float jumpHeight = (PLAYER_JUMP_HEIGHT * (jumpTime / PLAYER_JUMP_TIME_MAX));
+            jumpForce = (jumpTime / jumpHeight);
+            jumpVelocity = 0;
+            break;
+        }
     }
+
+    state = newState;
+    stateTime = 0;
 }
 
 int Player::GetInputXAxis() {
     static auto inputManager = g_Engine->GetManager<managers::InputManager>();
-    return ((inputManager->GetInputDown("right")) - (inputManager->GetInputDown("left")));
+
+    int xAxis = ((inputManager->GetInputDown("right")) - (inputManager->GetInputDown("left")));
+    if (xAxis != 0) {
+        currentDir = xAxis;
+    }
+
+    return xAxis;
 }
 
 void Player::Update(double deltaTime) {
@@ -62,22 +84,31 @@ void Player::Update(double deltaTime) {
 
     switch (state) {
         case PlayerState::Idle: {
-            textureName = ((inputManager->GetInputDown("up")) ? PLAYER_TEXTURE_IDLE_LOOK_UP : PLAYER_TEXTURE_IDLE);
-
+            // move to Walking
             int xAxis = GetInputXAxis();
             if (xAxis != 0) {
                 SetState(PlayerState::Walking);
+                break;
             }
 
+            // move to JumpPrepare
+            if (inputManager->GetInputPressed("jump")) {
+                SetState(PlayerState::JumpPrepare);
+                break;
+            }
+
+            // update texture
+            textureName = ((inputManager->GetInputDown("up")) ? PLAYER_TEXTURE_IDLE_LOOK_UP : PLAYER_TEXTURE_IDLE);
             break;
         }
 
         case PlayerState::Walking: {
-            // exit state if no longer moving
+            // move to Idle
             int xAxis = GetInputXAxis();
-            if (xAxis == 0) return SetState(PlayerState::Idle);
-
-            walkDirLast = xAxis;
+            if (xAxis == 0) {
+                SetState(PlayerState::Idle);
+                break;
+            }
 
             // update walk texture
             static std::vector<std::string> walkTextures = {
@@ -88,7 +119,7 @@ void Player::Update(double deltaTime) {
             };
 
             walkTextureTimer += deltaTime;
-            if (walkTextureTimer > 1.33f) {
+            if (walkTextureTimer > 1.33) {
                 walkTextureTimer = 0;
                 walkTextureIndex = ((++walkTextureIndex >= walkTextures.size()) ? 0 : walkTextureIndex);
             }
@@ -96,26 +127,53 @@ void Player::Update(double deltaTime) {
             textureName = walkTextures[walkTextureIndex];
 
             // update position
-            const float moveSpeed = 0.1f;
+            static const float moveSpeed = 0.1f;
             position.x += (moveSpeed * static_cast<float>(xAxis));
             break;
         }
 
         case PlayerState::JumpPrepare: {
+            // move to Jump
+            if (inputManager->GetInputReleased("jump")) {
+                SetState(PlayerState::Jump);
+                break;
+            }
+
+            // update texture
+            textureName = PLAYER_TEXTURE_JUMP_PREPARE;
             break;
         }
 
         case PlayerState::Jump: {
+            if (position.y <= -5) {
+                SetState((stateTime >= 2) ? PlayerState::LandFail : PlayerState::Idle);
+                break;
+            }
+
+            // update jumpForce
+            float forceModifier = ((stateTime >= (jumpTime * 0.5)) ? 1.0f : -1.0f);
+            jumpVelocity = std::clamp((jumpVelocity + (jumpForce * forceModifier)), PLAYER_JUMP_VELOCITY_MIN, PLAYER_JUMP_VELOCITY_MAX);
+
+            // update texture
+            textureName = (((std::abs(jumpForce)) == 1) ? PLAYER_TEXTURE_JUMP_UPWARDS : PLAYER_TEXTURE_JUMP_DOWNWARDS);
             break;
         }
 
         case PlayerState::LandFail: {
+            if (stateTime > 1) {
+                SetState(PlayerState::Idle);
+                break;
+            }
+
+            textureName = PLAYER_TEXTURE_LAND_FAIL;
             break;
         }
     }
 
-    core::Log::Info(fmt::format("state time: {}", stateTime));
+    position.y += static_cast<float>(jumpVelocity);
+
     stateTime += deltaTime;
+    core::Log::Info(fmt::format("jumpForce: {}, jumpVelocity: {}, y: {}", std::to_string(jumpForce), std::to_string(jumpVelocity), std::to_string(position.y)));
 }
 
 void Player::Render() {
@@ -123,11 +181,13 @@ void Player::Render() {
     auto texture = assetManager->GetAssetOrDefault<assets::Texture>(textureName);
     auto shader = assetManager->GetAssetOrDefault<assets::Shader>("player");
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(shader->GetProgram());
         glBindTexture(GL_TEXTURE_2D, texture->textureId);
 
         glm::mat4 translation = glm::translate(glm::mat4(1.0f), position);
-        glm::mat4 scale = glm::scale(glm::mat4(1.0f), glm::vec3(static_cast<float>(walkDirLast), 1.0f, 0.1f));
+        glm::mat4 scale = glm::scale(glm::mat4(1.0f), glm::vec3(static_cast<float>(currentDir), 1.0f, 0.1f));
         shader->SetUniform("u_modelMatrix", (translation * scale));
 
         auto perspective = glm::perspective(glm::radians(90.0f), static_cast<float>(g_Engine->GetWindowWidth()) / static_cast<float>(g_Engine->GetWindowHeight()), 0.1f, 30.0f);
@@ -135,4 +195,5 @@ void Player::Render() {
 
         mesh.Draw();
     glUseProgram(0);
+    glDisable(GL_BLEND);
 }
