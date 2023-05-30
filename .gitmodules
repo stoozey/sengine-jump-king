@@ -1,0 +1,3 @@
+[submodule "thirdparty/sengine"]
+	path = thirdparty/sengine
+	url = https://github.com/stoozey/sengine.git
